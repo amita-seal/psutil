@@ -1,347 +1,151 @@
 # Shortcuts for various tasks (UNIX only).
 # To use a specific Python version run: "make install PYTHON=python3.3"
-# You can set the variables below from the command line.
 
-# Configurable.
-PYTHON = python3
-ARGS =
-TSCRIPT = psutil/tests/runner.py
+# You can set these variables from the command line.
+PYTHON    = python
+TSCRIPT   = psutil/tests/runner.py
 
-# Internal.
-PY3_DEPS = \
-	autoflake \
-	autopep8 \
-	check-manifest \
-	concurrencytest \
-	coverage \
+# For internal use.
+PY3 := $(shell $(PYTHON) -c "import sys; print(sys.version_info[0] == 3)")
+PYVER := $(shell $(PYTHON) -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
+
+DEPS = coverage \
 	flake8 \
-	flake8-blind-except \
-	flake8-bugbear \
-	flake8-debugger \
-	flake8-print \
-	flake8-quotes \
-	isort \
-	pep8-naming \
-	pylint \
-	pyperf \
-	pypinfo \
+	ipdb \
+	nose \
+	pep8 \
+	pyflakes \
 	requests \
-	setuptools \
-	sphinx_rtd_theme \
-	twine \
-	virtualenv \
-	wheel
-PY2_DEPS = \
-	futures \
-	ipaddress \
-	mock
-PY_DEPS = `$(PYTHON) -c \
-	"import sys; \
-	py3 = sys.version_info[0] == 3; \
-	py38 = sys.version_info[:2] >= (3, 8); \
-	py3_extra = ' abi3audit' if py38 else ''; \
-	print('$(PY3_DEPS)' + py3_extra if py3 else '$(PY2_DEPS)')"`
-NUM_WORKERS = `$(PYTHON) -c "import os; print(os.cpu_count() or 1)"`
-# "python3 setup.py build" can be parallelized on Python >= 3.6.
-BUILD_OPTS = `$(PYTHON) -c \
-	"import sys, os; \
-	py36 = sys.version_info[:2] >= (3, 6); \
-	cpus = os.cpu_count() or 1 if py36 else 1; \
-	print('--parallel %s' % cpus if cpus > 1 else '')"`
-# In not in a virtualenv, add --user options for install commands.
-INSTALL_OPTS = `$(PYTHON) -c \
-	"import sys; print('' if hasattr(sys, 'real_prefix') or hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix else '--user')"`
-TEST_PREFIX = PSUTIL_SCRIPTS_DIR=`pwd`/scripts PYTHONWARNINGS=always PSUTIL_DEBUG=1
+	sphinx \
+	sphinx-pypi-upload
+ifeq ($(PYVER), 2.6)
+	DEPS += unittest2 ipaddress futures mock==1.0.1
+endif
+ifeq ($(PYVER), 2.7)
+	DEPS += unittest2 ipaddress futures mock
+endif
 
-# if make is invoked with no arg, default to `make help`
-.DEFAULT_GOAL := help
+ifeq ($(PY3), True)
+	URLLIB_IMPORTS := from urllib.request import urlopen, ssl
+else
+	URLLIB_IMPORTS := from urllib2 import urlopen, ssl
+endif
 
-# ===================================================================
-# Install
-# ===================================================================
 
-clean:  ## Remove all build files.
-	@rm -rfv `find . \
-		-type d -name __pycache__ \
-		-o -type f -name \*.bak \
-		-o -type f -name \*.orig \
-		-o -type f -name \*.pyc \
-		-o -type f -name \*.pyd \
-		-o -type f -name \*.pyo \
-		-o -type f -name \*.rej \
-		-o -type f -name \*.so \
-		-o -type f -name \*.~ \
-		-o -type f -name \*\$testfn`
-	@rm -rfv \
-		*.core \
-		*.egg-info \
-		*\@psutil-* \
-		.coverage \
-		.failed-tests.txt \
-		.pytest_cache \
-		build/ \
-		dist/ \
-		docs/_build/ \
-		htmlcov/ \
-		wheelhouse
+all: test
 
-.PHONY: build
-build:  ## Compile (in parallel) without installing.
-	@# "build_ext -i" copies compiled *.so files in ./psutil directory in order
-	@# to allow "import psutil" when using the interactive interpreter from
-	@# within  this directory.
-	PYTHONWARNINGS=all $(PYTHON) setup.py build_ext -i $(BUILD_OPTS)
-	$(PYTHON) -c "import psutil"  # make sure it actually worked
+clean:
+	rm -f `find . -type f -name \*.py[co]`
+	rm -f `find . -type f -name \*.so`
+	rm -f `find . -type f -name \*.~`
+	rm -f `find . -type f -name \*.orig`
+	rm -f `find . -type f -name \*.bak`
+	rm -f `find . -type f -name \*.rej`
+	rm -rf `find . -type d -name __pycache__`
+	rm -rf *.core
+	rm -rf *.egg-info
+	rm -rf *\$testfile*
+	rm -rf .coverage
+	rm -rf .tox
+	rm -rf build
+	rm -rf dist
+	rm -rf docs/_build
+	rm -rf htmlcov
 
-install:  ## Install this package as current user in "edit" mode.
-	${MAKE} build
-	PYTHONWARNINGS=all $(PYTHON) setup.py develop $(INSTALL_OPTS)
-	$(PYTHON) -c "import psutil"  # make sure it actually worked
+build: clean
+	$(PYTHON) setup.py build
+	@# copies *.so files in ./psutil directory in order to allow
+	@# "import psutil" when using the interactive interpreter from within
+	@# this directory.
+	$(PYTHON) setup.py build_ext -i
 
-uninstall:  ## Uninstall this package via pip.
-	cd ..; $(PYTHON) -m pip uninstall -y -v psutil || true
-	$(PYTHON) scripts/internal/purge_installation.py
+install: build
+	$(PYTHON) setup.py develop --user
 
-install-pip:  ## Install pip (no-op if already installed).
-	@$(PYTHON) -c \
-		"import sys, ssl, os, pkgutil, tempfile, atexit; \
-		sys.exit(0) if pkgutil.find_loader('pip') else None; \
-		pyexc = 'from urllib.request import urlopen' if sys.version_info[0] == 3 else 'from urllib2 import urlopen'; \
-		exec(pyexc); \
-		ctx = ssl._create_unverified_context() if hasattr(ssl, '_create_unverified_context') else None; \
-		kw = dict(context=ctx) if ctx else {}; \
-		req = urlopen('https://bootstrap.pypa.io/get-pip.py', **kw); \
-		data = req.read(); \
-		f = tempfile.NamedTemporaryFile(suffix='.py'); \
-		atexit.register(f.close); \
-		f.write(data); \
-		f.flush(); \
-		print('downloaded %s' % f.name); \
-		code = os.system('%s %s --user --upgrade' % (sys.executable, f.name)); \
-		f.close(); \
-		sys.exit(code);"
+uninstall:
+	cd ..; $(PYTHON) -m pip uninstall -y -v psutil
 
-setup-dev-env:  ## Install GIT hooks, pip, test deps (also upgrades them).
-	${MAKE} install-git-hooks
-	${MAKE} install-pip
-	$(PYTHON) -m pip install $(INSTALL_OPTS) --upgrade --trusted-host files.pythonhosted.org pip
-	$(PYTHON) -m pip install $(INSTALL_OPTS) --upgrade --trusted-host files.pythonhosted.org $(PY_DEPS)
+# useful deps which are nice to have while developing / testing
+setup-dev-env: install-git-hooks
+	$(PYTHON) -c "$(URLLIB_IMPORTS); \
+				context = ssl._create_unverified_context() if hasattr(ssl, '_create_unverified_context') else None; \
+				kw = dict(context=context) if context else {}; \
+				r = urlopen('https://bootstrap.pypa.io/get-pip.py', **kw); \
+				open('/tmp/get-pip.py', 'w').write(str(r.read()));"
+	$(PYTHON) /tmp/get-pip.py --user
+	rm /tmp/get-pip.py
+	$(PYTHON) -m pip install --user --upgrade pip
+	$(PYTHON) -m pip install --user --upgrade $(DEPS)
 
-# ===================================================================
-# Tests
-# ===================================================================
+test: install
+	$(PYTHON) $(TSCRIPT)
 
-test:  ## Run all tests. To run a specific test do "make test ARGS=psutil.tests.test_system.TestDiskAPIs"
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS)
+test-process: install
+	$(PYTHON) -m unittest -v psutil.tests.test_process
 
-test-parallel:  ## Run all tests in parallel.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) --parallel
+test-system: install
+	$(PYTHON) -m unittest -v psutil.tests.test_system
 
-test-process:  ## Run process-related API tests.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_process.py
+test-memleaks: install
+	$(PYTHON) psutil/tests/test_memory_leaks.py
 
-test-system:  ## Run system-related API tests.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_system.py
+# Run a specific test by name; e.g. "make test-by-name disk_" will run
+# all test methods containing "disk_" in their name.
+# Requires "pip install nose".
+test-by-name: install
+	@$(PYTHON) -m nose psutil/tests/*.py --nocapture -v -m $(filter-out $@,$(MAKECMDGOALS))
 
-test-misc:  ## Run miscellaneous tests.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_misc.py
+# Run specific platform tests only.
+test-platform: install
+	$(PYTHON) psutil/tests/test_`$(PYTHON) -c 'import psutil; print([x.lower() for x in ("LINUX", "BSD", "OSX", "SUNOS", "WINDOWS") if getattr(psutil, x)][0])'`.py
 
-test-testutils:  ## Run test utils tests.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_testutils.py
+# Same as above but for test_memory_leaks.py script.
+test-memleaks-by-name: install
+	@$(PYTHON) -m nose test/test_memory_leaks.py --nocapture -v -m $(filter-out $@,$(MAKECMDGOALS))
 
-test-unicode:  ## Test APIs dealing with strings.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_unicode.py
-
-test-contracts:  ## APIs sanity tests.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_contracts.py
-
-test-connections:  ## Test net_connections() and Process.connections().
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_connections.py
-
-test-posix:  ## POSIX specific tests.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_posix.py
-
-test-platform:  ## Run specific platform tests only.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_`$(PYTHON) -c 'import psutil; print([x.lower() for x in ("LINUX", "BSD", "OSX", "SUNOS", "WINDOWS", "AIX") if getattr(psutil, x)][0])'`.py
-
-test-memleaks:  ## Memory leak tests.
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) psutil/tests/test_memleaks.py
-
-test-failed:  ## Re-run tests which failed on last run
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) $(TSCRIPT) $(ARGS) --last-failed
-
-test-coverage:  ## Run test coverage.
-	${MAKE} build
+coverage: install
 	# Note: coverage options are controlled by .coveragerc file
 	rm -rf .coverage htmlcov
-	$(TEST_PREFIX) $(PYTHON) -m coverage run -m unittest -v
+	$(PYTHON) -m coverage run $(TSCRIPT)
 	$(PYTHON) -m coverage report
 	@echo "writing results to htmlcov/index.html"
 	$(PYTHON) -m coverage html
 	$(PYTHON) -m webbrowser -t htmlcov/index.html
 
-# ===================================================================
-# Linters
-# ===================================================================
+pep8:
+	@git ls-files | grep \\.py$ | xargs $(PYTHON) -m pep8
 
-flake8:  ## Run flake8 linter.
-	@git ls-files '*.py' | xargs $(PYTHON) -m flake8 --config=.flake8 --jobs=${NUM_WORKERS}
+pyflakes:
+	@export PYFLAKES_NODOCTEST=1 && \
+		git ls-files | grep \\.py$ | xargs $(PYTHON) -m pyflakes
 
-isort:  ## Run isort linter.
-	@git ls-files '*.py' | xargs $(PYTHON) -m isort --check-only --jobs=${NUM_WORKERS}
+flake8:
+	@git ls-files | grep \\.py$ | xargs $(PYTHON) -m flake8
 
-pylint:  ## Python pylint (not mandatory, just run it from time to time)
-	@git ls-files '*.py' | xargs $(PYTHON) -m pylint --rcfile=pyproject.toml --jobs=${NUM_WORKERS}
+# Upload source tarball on https://pypi.python.org/pypi/psutil.
+upload-src: clean
+	$(PYTHON) setup.py sdist upload
 
-c-linter:  ## Run C linter.
-	@git ls-files '*.c' '*.h' | xargs $(PYTHON) scripts/internal/clinter.py
+# Build and upload doc on https://pythonhosted.org/psutil/.
+# Requires "pip install sphinx-pypi-upload".
+upload-doc:
+	cd docs; make html
+	$(PYTHON) setup.py upload_sphinx --upload-dir=docs/_build/html
 
-lint-all:  ## Run all linters
-	${MAKE} flake8
-	${MAKE} isort
-	${MAKE} c-linter
-
-# ===================================================================
-# Fixers
-# ===================================================================
-
-fix-flake8:  ## Run autopep8, fix some Python flake8 / pep8 issues.
-	@git ls-files '*.py' | xargs $(PYTHON) -m autopep8 --in-place --jobs=${NUM_WORKERS} --global-config=.flake8
-	@git ls-files '*.py' | xargs $(PYTHON) -m autoflake --in-place --jobs=${NUM_WORKERS} --remove-all-unused-imports --remove-unused-variables --remove-duplicate-keys
-
-fix-imports:  ## Fix imports with isort.
-	@git ls-files '*.py' | xargs $(PYTHON) -m isort --jobs=${NUM_WORKERS}
-
-fix-all:  ## Run all code fixers.
-	${MAKE} fix-flake8
-	${MAKE} fix-imports
-
-# ===================================================================
-# GIT
-# ===================================================================
-
-install-git-hooks:  ## Install GIT pre-commit hook.
-	ln -sf ../../scripts/internal/git_pre_commit.py .git/hooks/pre-commit
-	chmod +x .git/hooks/pre-commit
-
-# ===================================================================
-# Distribution
-# ===================================================================
-
-sdist:  ## Create tar.gz source distribution.
-	${MAKE} generate-manifest
-	PYTHONWARNINGS=all $(PYTHON) setup.py sdist
-
-download-wheels-github:  ## Download latest wheels hosted on github.
-	$(PYTHON) scripts/internal/download_wheels_github.py --tokenfile=~/.github.token
-	${MAKE} print-dist
-
-download-wheels-appveyor:  ## Download latest wheels hosted on appveyor.
-	$(PYTHON) scripts/internal/download_wheels_appveyor.py
-	${MAKE} print-dist
-
-check-sdist:  ## Check sanity of source distribution.
-	$(PYTHON) -m virtualenv --clear --no-wheel --quiet build/venv
-	build/venv/bin/python -m pip install -v --isolated --quiet dist/*.tar.gz
-	build/venv/bin/python -c "import os; os.chdir('build/venv'); import psutil"
-	$(PYTHON) -m twine check --strict dist/*.tar.gz
-
-check-wheels:  ## Check sanity of wheels.
-	$(PYTHON) -m abi3audit --verbose --strict dist/*-abi3-*.whl
-	$(PYTHON) -m twine check --strict dist/*.whl
-
-pre-release:  ## Check if we're ready to produce a new release.
-	${MAKE} clean
-	${MAKE} sdist
-	${MAKE} check-sdist
-	${MAKE} install
-	${MAKE} download-wheels-github
-	${MAKE} download-wheels-appveyor
-	${MAKE} check-wheels
-	${MAKE} print-hashes
-	${MAKE} print-dist
-	$(PYTHON) -c \
-		"from psutil import __version__ as ver; \
-		doc = open('docs/index.rst').read(); \
-		history = open('HISTORY.rst').read(); \
-		assert ver in doc, '%r not in docs/index.rst' % ver; \
-		assert ver in history, '%r not in HISTORY.rst' % ver; \
-		assert 'XXXX' not in history, 'XXXX in HISTORY.rst';"
-
-release:  ## Upload a new release.
-	${MAKE} check-sdist
-	${MAKE} check-wheels
-	$(PYTHON) -m twine upload dist/*.tar.gz
-	$(PYTHON) -m twine upload dist/*.whl
-	${MAKE} git-tag-release
-
-generate-manifest:  ## Generates MANIFEST.in file.
-	$(PYTHON) scripts/internal/generate_manifest.py > MANIFEST.in
-
-print-dist:  ## Print downloaded wheels / tar.gs
-	$(PYTHON) scripts/internal/print_dist.py
-
-git-tag-release:  ## Git-tag a new release.
-	git tag -a release-`python3 -c "import setup; print(setup.get_version())"` -m `git rev-list HEAD --count`:`git rev-parse --short HEAD`
+# git-tag a new release
+git-tag-release:
+	git tag -a release-`python -c "import setup; print(setup.get_version())"` -m `git rev-list HEAD --count`:`git rev-parse --short HEAD`
 	git push --follow-tags
 
-# ===================================================================
-# Printers
-# ===================================================================
+# install GIT pre-commit hook
+install-git-hooks:
+	ln -sf ../../.git-pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
 
-print-announce:  ## Print announce of new release.
-	@$(PYTHON) scripts/internal/print_announce.py
+# download exes/wheels hosted on appveyor
+win-download-exes:
+	$(PYTHON) .ci/appveyor/download_exes.py --user giampaolo --project psutil
 
-print-timeline:  ## Print releases' timeline.
-	@$(PYTHON) scripts/internal/print_timeline.py
-
-print-access-denied: ## Print AD exceptions
-	${MAKE} build
-	@$(TEST_PREFIX) $(PYTHON) scripts/internal/print_access_denied.py
-
-print-api-speed:  ## Benchmark all API calls
-	${MAKE} build
-	@$(TEST_PREFIX) $(PYTHON) scripts/internal/print_api_speed.py $(ARGS)
-
-print-downloads:  ## Print PYPI download statistics
-	$(PYTHON) scripts/internal/print_downloads.py
-
-print-hashes:  ## Prints hashes of files in dist/ directory
-	$(PYTHON) scripts/internal/print_hashes.py dist/
-
-# ===================================================================
-# Misc
-# ===================================================================
-
-grep-todos:  ## Look for TODOs in the source files.
-	git grep -EIn "TODO|FIXME|XXX"
-
-bench-oneshot:  ## Benchmarks for oneshot() ctx manager (see #799).
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) scripts/internal/bench_oneshot.py
-
-bench-oneshot-2:  ## Same as above but using perf module (supposed to be more precise)
-	${MAKE} build
-	$(TEST_PREFIX) $(PYTHON) scripts/internal/bench_oneshot_2.py
-
-check-broken-links:  ## Look for broken links in source files.
-	git ls-files | xargs $(PYTHON) -Wa scripts/internal/check_broken_links.py
-
-check-manifest:  ## Inspect MANIFEST.in file.
-	$(PYTHON) -m check_manifest -v $(ARGS)
-
-help: ## Display callable targets.
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+# upload exes/wheels in dist/* directory to PYPI
+win-upload-exes:
+	$(PYTHON) -m twine upload dist/*

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola', karthikrev. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -12,19 +12,31 @@ $ pidof python
 """
 
 from __future__ import print_function
-
-import sys
-
 import psutil
+import sys
 
 
 def pidof(pgname):
     pids = []
-    for proc in psutil.process_iter(['name', 'cmdline']):
+    for proc in psutil.process_iter():
         # search for matches in the process name and cmdline
-        if proc.info['name'] == pgname or \
-                proc.info['cmdline'] and proc.info['cmdline'][0] == pgname:
-            pids.append(str(proc.pid))
+        try:
+            name = proc.name()
+        except psutil.Error:
+            pass
+        else:
+            if name == pgname:
+                pids.append(str(proc.pid))
+                continue
+
+        try:
+            cmdline = proc.cmdline()
+        except psutil.Error:
+            pass
+        else:
+            if cmdline and cmdline[0] == pgname:
+                pids.append(str(proc.pid))
+
     return pids
 
 
@@ -36,7 +48,6 @@ def main():
     pids = pidof(pgname)
     if pids:
         print(" ".join(pids))
-
 
 if __name__ == '__main__':
     main()

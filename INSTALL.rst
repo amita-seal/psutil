@@ -1,126 +1,90 @@
-Install psutil
-==============
+*Note: pip is the easiest way to install psutil.
+It is shipped by default with Python 2.7.9+ and 3.4+. If you're using an
+older Python version* `install pip <https://pip.pypa.io/en/latest/installing/>`__
+*first.*
 
-Linux, Windows, macOS (wheels)
-------------------------------
+Linux
+=====
 
-Pre-compiled wheels are distributed for these platforms, so you won't have to
-install a C compiler. All you have to do is::
+Ubuntu / Debian (use `python3-dev` for python 3)::
 
-    pip install psutil
+    $ sudo apt-get install gcc python-dev
+    $ pip install psutil
 
-If wheels are not available for your platform or architecture, or you wish to
-build & install psutil from sources, keep reading.
+RedHat (use `python3-devel` for python 3)::
 
-Linux (build)
--------------
+    $ sudo yum install gcc python-devel
+    $ pip install psutil
 
-Ubuntu / Debian::
+OSX
+===
 
-    sudo apt-get install gcc python3-dev
-    pip install --no-binary :all: psutil
+Install `XcodeTools <https://developer.apple.com/downloads/?name=Xcode>`__
+first, then:
 
-RedHat / CentOS::
+::
 
-    sudo yum install gcc python3-devel
-    pip install --no-binary :all: psutil
+    $ pip install psutil
 
-Alpine::
+Windows
+=======
 
-    sudo apk add gcc python3-dev
-    pip install --no-binary :all: psutil
+The easiest way to install psutil on Windows is to just use the pre-compiled
+exe/wheel installers on
+`PYPI <https://pypi.python.org/pypi/psutil/#downloads>`__ via pip::
 
-Windows (build)
----------------
+    $ C:\Python27\python.exe -m pip install psutil
 
-In order to install psutil from sources on Windows you need Visual Studio
-(MinGW is not supported).
-Here's a couple of guides describing how to do it: `link <https://blog.ionelmc.ro/2014/12/21/compiling-python-extensions-on-windows/>`__
-and `link <https://cpython-core-tutorial.readthedocs.io/en/latest/build_cpython_windows.html>`__.
-Once VS is installed do::
+If you want to compile psutil from sources you'll need **Visual Studio**
+(Mingw32 is no longer supported):
 
-    pip install --no-binary :all: psutil
+* Python 2.6, 2.7: `VS-2008 <http://www.microsoft.com/en-us/download/details.aspx?id=44266>`__
+* Python 3.3, 3.4: `VS-2010 <http://www.visualstudio.com/downloads/download-visual-studio-vs#d-2010-express>`__
+* Python 3.5+: `VS-2015 <http://www.visualstudio.com/en-au/news/vs2015-preview-vs>`__
 
-macOS (build)
--------------
+Compiling 64 bit versions of Python 2.6 and 2.7 with VS 2008 requires
+`Windows SDK and .NET Framework 3.5 SP1 <https://www.microsoft.com/en-us/download/details.aspx?id=3138>`__.
+Once installed run vcvars64.bat, then you can finally compile (see
+`here <http://stackoverflow.com/questions/11072521/>`__).
+To compile / install psutil from sources on Windows run::
 
-Install `Xcode <https://developer.apple.com/downloads/?name=Xcode>`__ then run::
-
-    pip install --no-binary :all: psutil
+    $ make.bat build
+    $ make.bat install
 
 FreeBSD
--------
+=======
 
 ::
 
-    pkg install python3 gcc
-    python3 -m pip install psutil
+    $ pkg install python gcc
+    $ python -m pip install psutil
 
 OpenBSD
--------
+=======
 
 ::
 
-    export PKG_PATH=http://ftp.eu.openbsd.org/pub/OpenBSD/`uname -r`/packages/`uname -m`/
-    pkg_add -v python3 gcc
-    pip install psutil
+    $ export PKG_PATH=http://ftp.usa.openbsd.org/pub/OpenBSD/`uname -r`/packages/`arch -s`
+    $ pkg_add -v python gcc
+    $ python -m pip install psutil
 
 NetBSD
-------
-
-Assuming Python 3.11 (the most recent at the time of writing):
+======
 
 ::
 
-    export PKG_PATH="http://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/`uname -m`/`uname -r`/All"
-    pkg_add -v pkgin
-    pkgin install python311-* gcc12-* py311-setuptools-* py311-pip-*
-    python3.11 -m pip install psutil
+    $ export PKG_PATH="ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/`uname -m`/`uname -r`/All"
+    $ pkg_add -v pkgin
+    $ pkgin install python gcc
+    $ python -m pip install psutil
 
-Sun Solaris
------------
+Solaris
+=======
 
-If ``cc`` compiler is not installed create a symbolic link to ``gcc``::
+XXX
 
-    sudo ln -s /usr/bin/gcc /usr/local/bin/cc
+Dev Guide
+=========
 
-Install::
-
-    pkg install gcc
-    pip install psutil
-
-Troubleshooting
-===============
-
-Install pip
------------
-
-Pip is shipped by default with Python 2.7.9+ and 3.4+.
-If you don't have pip you can install with wget::
-
-    wget https://bootstrap.pypa.io/get-pip.py -O - | python3
-
-...or with curl::
-
-    python3 < <(curl -s https://bootstrap.pypa.io/get-pip.py)
-
-On Windows, `download pip <https://pip.pypa.io/en/latest/installing/>`__, open
-cmd.exe and install it with::
-
-    py get-pip.py
-
-"pip not found"
----------------
-
-Sometimes pip is installed but it's not available in your ``PATH``
-("pip command not found" or similar). Try this::
-
-    python3 -m pip install psutil
-
-Permission errors (UNIX)
-------------------------
-
-If you want to install psutil system-wide and you bump into permission errors
-either run as root user or prepend ``sudo``::
-
-    sudo pip install psutil
+If you plan on hacking on psutil you may want to take a look at the
+`dev guide <https://github.com/giampaolo/psutil/blob/master/DEVGUIDE.rst>`__.

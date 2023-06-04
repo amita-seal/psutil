@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -7,7 +7,7 @@
 """
 A clone of 'free' cmdline utility.
 
-$ python3 scripts/free.py
+$ python scripts/free.py
              total       used       free     shared    buffers      cache
 Mem:      10125520    8625996    1499524          0     349500    3307836
 Swap:            0          0          0
@@ -36,7 +36,6 @@ def main():
         '',
         '',
         ''))
-
 
 if __name__ == '__main__':
     main()

@@ -23,7 +23,6 @@
 #include <sys/socket.h>
 #include <linux/sockios.h>
 #include <linux/if.h>
-#include <sys/resource.h>
 
 // see: https://github.com/giampaolo/psutil/issues/659
 #ifdef PSUTIL_ETHTOOL_MISSING_TYPES
@@ -33,9 +32,9 @@
     typedef __u16 u16;
     typedef __u8 u8;
 #endif
-/* Avoid redefinition of struct sysinfo with musl libc */
-#define _LINUX_SYSINFO_H
 #include <linux/ethtool.h>
+
+#include "_psutil_linux.h"
 
 /* The minimum number of CPUs allocated in a cpu_set_t */
 static const int NCPUS_START = sizeof(unsigned long) * CHAR_BIT;
@@ -43,23 +42,23 @@ static const int NCPUS_START = sizeof(unsigned long) * CHAR_BIT;
 // Linux >= 2.6.13
 #define PSUTIL_HAVE_IOPRIO defined(__NR_ioprio_get) && defined(__NR_ioprio_set)
 
-// Should exist starting from CentOS 6 (year 2011).
-#ifdef CPU_ALLOC
-    #define PSUTIL_HAVE_CPU_AFFINITY
+// Linux >= 2.6.36 (supposedly) and glibc >= 13
+#define PSUTIL_HAVE_PRLIMIT \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)) && \
+    (__GLIBC__ >= 2 && __GLIBC_MINOR__ >= 13) && \
+    defined(__NR_prlimit64)
+
+#if PSUTIL_HAVE_PRLIMIT
+    #define _FILE_OFFSET_BITS 64
+    #include <time.h>
+    #include <sys/resource.h>
 #endif
 
-#include "_psutil_common.h"
-#include "_psutil_posix.h"
 
 // May happen on old RedHat versions, see:
 // https://github.com/giampaolo/psutil/issues/607
 #ifndef DUPLEX_UNKNOWN
     #define DUPLEX_UNKNOWN 0xff
-#endif
-
-
-#ifndef SPEED_UNKNOWN
-    #define SPEED_UNKNOWN -1
 #endif
 
 
@@ -78,18 +77,6 @@ ioprio_set(int which, int who, int ioprio) {
     return syscall(__NR_ioprio_set, which, who, ioprio);
 }
 
-// * defined in linux/ethtool.h but not always available (e.g. Android)
-// * #ifdef check needed for old kernels, see:
-//   https://github.com/giampaolo/psutil/issues/2164
-static inline uint32_t
-psutil_ethtool_cmd_speed(const struct ethtool_cmd *ecmd) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 27)
-    return ecmd->speed;
-#else
-    return (ecmd->speed_hi << 16) | ecmd->speed;
-#endif
-}
-
 #define IOPRIO_CLASS_SHIFT 13
 #define IOPRIO_PRIO_MASK ((1UL << IOPRIO_CLASS_SHIFT) - 1)
 
@@ -103,9 +90,9 @@ psutil_ethtool_cmd_speed(const struct ethtool_cmd *ecmd) {
  */
 static PyObject *
 psutil_proc_ioprio_get(PyObject *self, PyObject *args) {
-    pid_t pid;
+    long pid;
     int ioprio, ioclass, iodata;
-    if (! PyArg_ParseTuple(args, _Py_PARSE_PID, &pid))
+    if (! PyArg_ParseTuple(args, "l", &pid))
         return NULL;
     ioprio = ioprio_get(IOPRIO_WHO_PROCESS, pid);
     if (ioprio == -1)
@@ -123,19 +110,77 @@ psutil_proc_ioprio_get(PyObject *self, PyObject *args) {
  */
 static PyObject *
 psutil_proc_ioprio_set(PyObject *self, PyObject *args) {
-    pid_t pid;
+    long pid;
     int ioprio, ioclass, iodata;
     int retval;
 
-    if (! PyArg_ParseTuple(
-            args, _Py_PARSE_PID "ii", &pid, &ioclass, &iodata)) {
+    if (! PyArg_ParseTuple(args, "lii", &pid, &ioclass, &iodata))
         return NULL;
-    }
     ioprio = IOPRIO_PRIO_VALUE(ioclass, iodata);
     retval = ioprio_set(IOPRIO_WHO_PROCESS, pid, ioprio);
     if (retval == -1)
         return PyErr_SetFromErrno(PyExc_OSError);
     Py_RETURN_NONE;
+}
+#endif
+
+
+#if PSUTIL_HAVE_PRLIMIT
+/*
+ * A wrapper around prlimit(2); sets process resource limits.
+ * This can be used for both get and set, in which case extra
+ * 'soft' and 'hard' args must be provided.
+ */
+static PyObject *
+psutil_linux_prlimit(PyObject *self, PyObject *args) {
+    long pid;
+    int ret, resource;
+    struct rlimit old, new;
+    struct rlimit *newp = NULL;
+    PyObject *py_soft = NULL;
+    PyObject *py_hard = NULL;
+
+    if (! PyArg_ParseTuple(args, "li|OO", &pid, &resource, &py_soft, &py_hard))
+        return NULL;
+
+    // get
+    if (py_soft == NULL && py_hard == NULL) {
+        ret = prlimit(pid, resource, NULL, &old);
+        if (ret == -1)
+            return PyErr_SetFromErrno(PyExc_OSError);
+#if defined(PSUTIL_HAVE_LONG_LONG)
+        if (sizeof(old.rlim_cur) > sizeof(long)) {
+            return Py_BuildValue("LL",
+                                 (PY_LONG_LONG)old.rlim_cur,
+                                 (PY_LONG_LONG)old.rlim_max);
+        }
+#endif
+        return Py_BuildValue("ll", (long)old.rlim_cur, (long)old.rlim_max);
+    }
+
+    // set
+    else {
+#if defined(PSUTIL_HAVE_LARGEFILE_SUPPORT)
+        new.rlim_cur = PyLong_AsLongLong(py_soft);
+        if (new.rlim_cur == (rlim_t) - 1 && PyErr_Occurred())
+            return NULL;
+        new.rlim_max = PyLong_AsLongLong(py_hard);
+        if (new.rlim_max == (rlim_t) - 1 && PyErr_Occurred())
+            return NULL;
+#else
+        new.rlim_cur = PyLong_AsLong(py_soft);
+        if (new.rlim_cur == (rlim_t) - 1 && PyErr_Occurred())
+            return NULL;
+        new.rlim_max = PyLong_AsLong(py_hard);
+        if (new.rlim_max == (rlim_t) - 1 && PyErr_Occurred())
+            return NULL;
+#endif
+        newp = &new;
+        ret = prlimit(pid, resource, newp, &old);
+        if (ret == -1)
+            return PyErr_SetFromErrno(PyExc_OSError);
+        Py_RETURN_NONE;
+    }
 }
 #endif
 
@@ -148,50 +193,36 @@ static PyObject *
 psutil_disk_partitions(PyObject *self, PyObject *args) {
     FILE *file = NULL;
     struct mntent *entry;
-    char *mtab_path;
-    PyObject *py_dev = NULL;
-    PyObject *py_mountp = NULL;
-    PyObject *py_tuple = NULL;
     PyObject *py_retlist = PyList_New(0);
+    PyObject *py_tuple = NULL;
 
     if (py_retlist == NULL)
         return NULL;
 
-    if (!PyArg_ParseTuple(args, "s", &mtab_path))
-        return NULL;
-
+    // MOUNTED constant comes from mntent.h and it's == '/etc/mtab'
     Py_BEGIN_ALLOW_THREADS
-    file = setmntent(mtab_path, "r");
+    file = setmntent(MOUNTED, "r");
     Py_END_ALLOW_THREADS
     if ((file == 0) || (file == NULL)) {
-        psutil_debug("setmntent() failed");
-        PyErr_SetFromErrnoWithFilename(PyExc_OSError, mtab_path);
+        PyErr_SetFromErrnoWithFilename(PyExc_OSError, MOUNTED);
         goto error;
     }
 
     while ((entry = getmntent(file))) {
         if (entry == NULL) {
-            PyErr_Format(PyExc_RuntimeError, "getmntent() syscall failed");
+            PyErr_Format(PyExc_RuntimeError, "getmntent() failed");
             goto error;
         }
-        py_dev = PyUnicode_DecodeFSDefault(entry->mnt_fsname);
-        if (! py_dev)
-            goto error;
-        py_mountp = PyUnicode_DecodeFSDefault(entry->mnt_dir);
-        if (! py_mountp)
-            goto error;
-        py_tuple = Py_BuildValue("(OOss)",
-                                 py_dev,             // device
-                                 py_mountp,          // mount point
+        py_tuple = Py_BuildValue("(ssss)",
+                                 entry->mnt_fsname,  // device
+                                 entry->mnt_dir,     // mount point
                                  entry->mnt_type,    // fs type
                                  entry->mnt_opts);   // options
         if (! py_tuple)
             goto error;
         if (PyList_Append(py_retlist, py_tuple))
             goto error;
-        Py_CLEAR(py_dev);
-        Py_CLEAR(py_mountp);
-        Py_CLEAR(py_tuple);
+        Py_DECREF(py_tuple);
     }
     endmntent(file);
     return py_retlist;
@@ -199,8 +230,6 @@ psutil_disk_partitions(PyObject *self, PyObject *args) {
 error:
     if (file != NULL)
         endmntent(file);
-    Py_XDECREF(py_dev);
-    Py_XDECREF(py_mountp);
     Py_XDECREF(py_tuple);
     Py_DECREF(py_retlist);
     return NULL;
@@ -232,27 +261,28 @@ psutil_linux_sysinfo(PyObject *self, PyObject *args) {
 
 /*
  * Return process CPU affinity as a Python list
+ * The dual implementation exists because of:
+ * https://github.com/giampaolo/psutil/issues/536
  */
-#ifdef PSUTIL_HAVE_CPU_AFFINITY
+
+#ifdef CPU_ALLOC
 
 static PyObject *
 psutil_proc_cpu_affinity_get(PyObject *self, PyObject *args) {
     int cpu, ncpus, count, cpucount_s;
-    pid_t pid;
+    long pid;
     size_t setsize;
     cpu_set_t *mask = NULL;
     PyObject *py_list = NULL;
 
-    if (!PyArg_ParseTuple(args, _Py_PARSE_PID, &pid))
+    if (!PyArg_ParseTuple(args, "l", &pid))
         return NULL;
     ncpus = NCPUS_START;
     while (1) {
         setsize = CPU_ALLOC_SIZE(ncpus);
         mask = CPU_ALLOC(ncpus);
-        if (mask == NULL) {
-            psutil_debug("CPU_ALLOC() failed");
+        if (mask == NULL)
             return PyErr_NoMemory();
-        }
         if (sched_getaffinity(pid, setsize, mask) == 0)
             break;
         CPU_FREE(mask);
@@ -297,7 +327,49 @@ error:
     Py_XDECREF(py_list);
     return NULL;
 }
+#else
 
+
+/*
+ * Alternative implementation in case CPU_ALLOC is not defined.
+ */
+static PyObject *
+psutil_proc_cpu_affinity_get(PyObject *self, PyObject *args) {
+    cpu_set_t cpuset;
+    unsigned int len = sizeof(cpu_set_t);
+    long pid;
+    int i;
+    PyObject* py_retlist = NULL;
+    PyObject *py_cpu_num = NULL;
+
+    if (!PyArg_ParseTuple(args, "l", &pid))
+        return NULL;
+	CPU_ZERO(&cpuset);
+    if (sched_getaffinity(pid, len, &cpuset) < 0)
+        return PyErr_SetFromErrno(PyExc_OSError);
+
+    py_retlist = PyList_New(0);
+    if (py_retlist == NULL)
+        goto error;
+    for (i = 0; i < CPU_SETSIZE; ++i) {
+        if (CPU_ISSET(i, &cpuset)) {
+            py_cpu_num = Py_BuildValue("i", i);
+            if (py_cpu_num == NULL)
+                goto error;
+            if (PyList_Append(py_retlist, py_cpu_num))
+                goto error;
+            Py_DECREF(py_cpu_num);
+        }
+    }
+
+    return py_retlist;
+
+error:
+    Py_XDECREF(py_cpu_num);
+    Py_XDECREF(py_retlist);
+    return NULL;
+}
+#endif
 
 /*
  * Set process CPU affinity; expects a bitmask
@@ -306,56 +378,51 @@ static PyObject *
 psutil_proc_cpu_affinity_set(PyObject *self, PyObject *args) {
     cpu_set_t cpu_set;
     size_t len;
-    pid_t pid;
-    Py_ssize_t i, seq_len;
+    long pid;
+    int i, seq_len;
     PyObject *py_cpu_set;
+    PyObject *py_cpu_seq = NULL;
 
-    if (!PyArg_ParseTuple(args, _Py_PARSE_PID "O", &pid, &py_cpu_set))
+    if (!PyArg_ParseTuple(args, "lO", &pid, &py_cpu_set))
         return NULL;
 
     if (!PySequence_Check(py_cpu_set)) {
-        return PyErr_Format(
-            PyExc_TypeError,
-#if PY_MAJOR_VERSION >= 3
-            "sequence argument expected, got %R", Py_TYPE(py_cpu_set)
-#else
-            "sequence argument expected, got %s", Py_TYPE(py_cpu_set)->tp_name
-#endif
-        );
+        PyErr_Format(PyExc_TypeError, "sequence argument expected, got %s",
+                     Py_TYPE(py_cpu_set)->tp_name);
+        goto error;
     }
 
-    seq_len = PySequence_Size(py_cpu_set);
-    if (seq_len < 0) {
-        return NULL;
-    }
+    py_cpu_seq = PySequence_Fast(py_cpu_set, "expected a sequence or integer");
+    if (!py_cpu_seq)
+        goto error;
+    seq_len = PySequence_Fast_GET_SIZE(py_cpu_seq);
     CPU_ZERO(&cpu_set);
     for (i = 0; i < seq_len; i++) {
-        PyObject *item = PySequence_GetItem(py_cpu_set, i);
-        if (!item) {
-            return NULL;
-        }
+        PyObject *item = PySequence_Fast_GET_ITEM(py_cpu_seq, i);
 #if PY_MAJOR_VERSION >= 3
         long value = PyLong_AsLong(item);
 #else
         long value = PyInt_AsLong(item);
 #endif
-        Py_XDECREF(item);
-        if ((value == -1) || PyErr_Occurred()) {
-            if (!PyErr_Occurred())
-                PyErr_SetString(PyExc_ValueError, "invalid CPU value");
-            return NULL;
-        }
+        if (value == -1 && PyErr_Occurred())
+            goto error;
         CPU_SET(value, &cpu_set);
     }
 
     len = sizeof(cpu_set);
     if (sched_setaffinity(pid, len, &cpu_set)) {
-        return PyErr_SetFromErrno(PyExc_OSError);
+        PyErr_SetFromErrno(PyExc_OSError);
+        goto error;
     }
 
+    Py_DECREF(py_cpu_seq);
     Py_RETURN_NONE;
+
+error:
+    if (py_cpu_seq != NULL)
+        Py_DECREF(py_cpu_seq);
+    return NULL;
 }
-#endif  /* PSUTIL_HAVE_CPU_AFFINITY */
 
 
 /*
@@ -366,9 +433,6 @@ psutil_users(PyObject *self, PyObject *args) {
     struct utmp *ut;
     PyObject *py_retlist = PyList_New(0);
     PyObject *py_tuple = NULL;
-    PyObject *py_username = NULL;
-    PyObject *py_tty = NULL;
-    PyObject *py_hostname = NULL;
     PyObject *py_user_proc = NULL;
 
     if (py_retlist == NULL)
@@ -381,42 +445,26 @@ psutil_users(PyObject *self, PyObject *args) {
             py_user_proc = Py_True;
         else
             py_user_proc = Py_False;
-        py_username = PyUnicode_DecodeFSDefault(ut->ut_user);
-        if (! py_username)
-            goto error;
-        py_tty = PyUnicode_DecodeFSDefault(ut->ut_line);
-        if (! py_tty)
-            goto error;
-        py_hostname = PyUnicode_DecodeFSDefault(ut->ut_host);
-        if (! py_hostname)
-            goto error;
-
         py_tuple = Py_BuildValue(
-            "OOOdO" _Py_PARSE_PID,
-            py_username,              // username
-            py_tty,                   // tty
-            py_hostname,              // hostname
-            (double)ut->ut_tv.tv_sec,  // tstamp
-            py_user_proc,             // (bool) user process
-            ut->ut_pid                // process id
+            "(sssfO)",
+            ut->ut_user,              // username
+            ut->ut_line,              // tty
+            ut->ut_host,              // hostname
+            (float)ut->ut_tv.tv_sec,  // tstamp
+            py_user_proc              // (bool) user process
         );
-        if (! py_tuple)
+    if (! py_tuple)
             goto error;
         if (PyList_Append(py_retlist, py_tuple))
             goto error;
-        Py_CLEAR(py_username);
-        Py_CLEAR(py_tty);
-        Py_CLEAR(py_hostname);
-        Py_CLEAR(py_tuple);
+        Py_DECREF(py_tuple);
     }
     endutent();
     return py_retlist;
 
 error:
-    Py_XDECREF(py_username);
-    Py_XDECREF(py_tty);
-    Py_XDECREF(py_hostname);
     Py_XDECREF(py_tuple);
+    Py_XDECREF(py_user_proc);
     Py_DECREF(py_retlist);
     endutent();
     return NULL;
@@ -430,15 +478,16 @@ error:
  * http://www.i-scream.org/libstatgrab/
  */
 static PyObject*
-psutil_net_if_duplex_speed(PyObject* self, PyObject* args) {
+psutil_net_if_stats(PyObject* self, PyObject* args) {
     char *nic_name;
     int sock = 0;
     int ret;
     int duplex;
-    __u32 uint_speed;
     int speed;
+    int mtu;
     struct ifreq ifr;
     struct ethtool_cmd ethcmd;
+    PyObject *py_is_up = NULL;
     PyObject *py_retlist = NULL;
 
     if (! PyArg_ParseTuple(args, "s", &nic_name))
@@ -446,8 +495,24 @@ psutil_net_if_duplex_speed(PyObject* self, PyObject* args) {
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock == -1)
-        return PyErr_SetFromOSErrnoWithSyscall("socket()");
-    PSUTIL_STRNCPY(ifr.ifr_name, nic_name, sizeof(ifr.ifr_name));
+        goto error;
+    strncpy(ifr.ifr_name, nic_name, sizeof(ifr.ifr_name));
+
+    // is up?
+    ret = ioctl(sock, SIOCGIFFLAGS, &ifr);
+    if (ret == -1)
+        goto error;
+    if ((ifr.ifr_flags & IFF_UP) != 0)
+        py_is_up = Py_True;
+    else
+        py_is_up = Py_False;
+    Py_INCREF(py_is_up);
+
+    // MTU
+    ret = ioctl(sock, SIOCGIFMTU, &ifr);
+    if (ret == -1)
+        goto error;
+    mtu = ifr.ifr_mtu;
 
     // duplex and speed
     memset(&ethcmd, 0, sizeof ethcmd);
@@ -457,15 +522,7 @@ psutil_net_if_duplex_speed(PyObject* self, PyObject* args) {
 
     if (ret != -1) {
         duplex = ethcmd.duplex;
-        // speed is returned from ethtool as a __u32 ranging from 0 to INT_MAX
-        // or SPEED_UNKNOWN (-1)
-        uint_speed = psutil_ethtool_cmd_speed(&ethcmd);
-        if (uint_speed == (__u32)SPEED_UNKNOWN || uint_speed > INT_MAX) {
-            speed = 0;
-        }
-        else {
-            speed = (int)uint_speed;
-        }
+        speed = ethcmd.speed;
     }
     else {
         if ((errno == EOPNOTSUPP) || (errno == EINVAL)) {
@@ -477,93 +534,171 @@ psutil_net_if_duplex_speed(PyObject* self, PyObject* args) {
             speed = 0;
         }
         else {
-            PyErr_SetFromOSErrnoWithSyscall("ioctl(SIOCETHTOOL)");
             goto error;
         }
     }
 
-    py_retlist = Py_BuildValue("[ii]", duplex, speed);
+    close(sock);
+    py_retlist = Py_BuildValue("[Oiii]", py_is_up, duplex, speed, mtu);
     if (!py_retlist)
         goto error;
-    close(sock);
+    Py_DECREF(py_is_up);
     return py_retlist;
 
 error:
-    if (sock != -1)
+    Py_XDECREF(py_is_up);
+    if (sock != 0)
         close(sock);
+    PyErr_SetFromErrno(PyExc_OSError);
     return NULL;
 }
 
 
 /*
- * Module init.
+ * Define the psutil C module methods and initialize the module.
  */
+static PyMethodDef
+PsutilMethods[] = {
 
-static PyMethodDef mod_methods[] = {
     // --- per-process functions
 
 #if PSUTIL_HAVE_IOPRIO
-    {"proc_ioprio_get", psutil_proc_ioprio_get, METH_VARARGS},
-    {"proc_ioprio_set", psutil_proc_ioprio_set, METH_VARARGS},
+    {"proc_ioprio_get", psutil_proc_ioprio_get, METH_VARARGS,
+     "Get process I/O priority"},
+    {"proc_ioprio_set", psutil_proc_ioprio_set, METH_VARARGS,
+     "Set process I/O priority"},
 #endif
-#ifdef PSUTIL_HAVE_CPU_AFFINITY
-    {"proc_cpu_affinity_get", psutil_proc_cpu_affinity_get, METH_VARARGS},
-    {"proc_cpu_affinity_set", psutil_proc_cpu_affinity_set, METH_VARARGS},
-#endif
+    {"proc_cpu_affinity_get", psutil_proc_cpu_affinity_get, METH_VARARGS,
+     "Return process CPU affinity as a Python long (the bitmask)."},
+    {"proc_cpu_affinity_set", psutil_proc_cpu_affinity_set, METH_VARARGS,
+     "Set process CPU affinity; expects a bitmask."},
+
     // --- system related functions
-    {"disk_partitions", psutil_disk_partitions, METH_VARARGS},
-    {"users", psutil_users, METH_VARARGS},
-    {"net_if_duplex_speed", psutil_net_if_duplex_speed, METH_VARARGS},
+
+    {"disk_partitions", psutil_disk_partitions, METH_VARARGS,
+     "Return disk mounted partitions as a list of tuples including "
+     "device, mount point and filesystem type"},
+    {"users", psutil_users, METH_VARARGS,
+     "Return currently connected users as a list of tuples"},
+    {"net_if_stats", psutil_net_if_stats, METH_VARARGS,
+     "Return NIC stats (isup, duplex, speed, mtu)"},
 
     // --- linux specific
-    {"linux_sysinfo", psutil_linux_sysinfo, METH_VARARGS},
-    // --- others
-    {"set_debug", psutil_set_debug, METH_VARARGS},
+
+    {"linux_sysinfo", psutil_linux_sysinfo, METH_VARARGS,
+     "A wrapper around sysinfo(), return system memory usage statistics"},
+#if PSUTIL_HAVE_PRLIMIT
+    {"linux_prlimit", psutil_linux_prlimit, METH_VARARGS,
+     "Get or set process resource limits."},
+#endif
+
 
     {NULL, NULL, 0, NULL}
 };
 
+struct module_state {
+    PyObject *error;
+};
 
 #if PY_MAJOR_VERSION >= 3
-    #define INITERR return NULL
-
-    static struct PyModuleDef moduledef = {
-        PyModuleDef_HEAD_INIT,
-        "_psutil_linux",
-        NULL,
-        -1,
-        mod_methods,
-        NULL,
-        NULL,
-        NULL,
-        NULL
-    };
-
-    PyObject *PyInit__psutil_linux(void)
-#else  /* PY_MAJOR_VERSION */
-    #define INITERR return
-
-    void init_psutil_linux(void)
-#endif  /* PY_MAJOR_VERSION */
-{
-#if PY_MAJOR_VERSION >= 3
-    PyObject *mod = PyModule_Create(&moduledef);
+#define GETSTATE(m) ((struct module_state*)PyModule_GetState(m))
 #else
-    PyObject *mod = Py_InitModule("_psutil_linux", mod_methods);
+#define GETSTATE(m) (&_state)
 #endif
-    if (mod == NULL)
-        INITERR;
 
-    if (PyModule_AddIntConstant(mod, "version", PSUTIL_VERSION)) INITERR;
-    if (PyModule_AddIntConstant(mod, "DUPLEX_HALF", DUPLEX_HALF)) INITERR;
-    if (PyModule_AddIntConstant(mod, "DUPLEX_FULL", DUPLEX_FULL)) INITERR;
-    if (PyModule_AddIntConstant(mod, "DUPLEX_UNKNOWN", DUPLEX_UNKNOWN)) INITERR;
-
-    psutil_setup();
-
-    if (mod == NULL)
-        INITERR;
 #if PY_MAJOR_VERSION >= 3
-    return mod;
+
+static int
+psutil_linux_traverse(PyObject *m, visitproc visit, void *arg) {
+    Py_VISIT(GETSTATE(m)->error);
+    return 0;
+}
+
+static int
+psutil_linux_clear(PyObject *m) {
+    Py_CLEAR(GETSTATE(m)->error);
+    return 0;
+}
+
+static struct PyModuleDef
+        moduledef = {
+    PyModuleDef_HEAD_INIT,
+    "psutil_linux",
+    NULL,
+    sizeof(struct module_state),
+    PsutilMethods,
+    NULL,
+    psutil_linux_traverse,
+    psutil_linux_clear,
+    NULL
+};
+
+#define INITERROR return NULL
+
+PyMODINIT_FUNC PyInit__psutil_linux(void)
+
+#else
+#define INITERROR return
+
+void init_psutil_linux(void)
+#endif
+{
+    PyObject *v;
+#if PY_MAJOR_VERSION >= 3
+    PyObject *module = PyModule_Create(&moduledef);
+#else
+    PyObject *module = Py_InitModule("_psutil_linux", PsutilMethods);
+#endif
+
+    PyModule_AddIntConstant(module, "version", PSUTIL_VERSION);
+#if PSUTIL_HAVE_PRLIMIT
+    PyModule_AddIntConstant(module, "RLIMIT_AS", RLIMIT_AS);
+    PyModule_AddIntConstant(module, "RLIMIT_CORE", RLIMIT_CORE);
+    PyModule_AddIntConstant(module, "RLIMIT_CPU", RLIMIT_CPU);
+    PyModule_AddIntConstant(module, "RLIMIT_DATA", RLIMIT_DATA);
+    PyModule_AddIntConstant(module, "RLIMIT_FSIZE", RLIMIT_FSIZE);
+    PyModule_AddIntConstant(module, "RLIMIT_LOCKS", RLIMIT_LOCKS);
+    PyModule_AddIntConstant(module, "RLIMIT_MEMLOCK", RLIMIT_MEMLOCK);
+    PyModule_AddIntConstant(module, "RLIMIT_NOFILE", RLIMIT_NOFILE);
+    PyModule_AddIntConstant(module, "RLIMIT_NPROC", RLIMIT_NPROC);
+    PyModule_AddIntConstant(module, "RLIMIT_RSS", RLIMIT_RSS);
+    PyModule_AddIntConstant(module, "RLIMIT_STACK", RLIMIT_STACK);
+
+#if defined(HAVE_LONG_LONG)
+    if (sizeof(RLIM_INFINITY) > sizeof(long)) {
+        v = PyLong_FromLongLong((PY_LONG_LONG) RLIM_INFINITY);
+    } else
+#endif
+    {
+        v = PyLong_FromLong((long) RLIM_INFINITY);
+    }
+    if (v) {
+        PyModule_AddObject(module, "RLIM_INFINITY", v);
+    }
+
+#ifdef RLIMIT_MSGQUEUE
+    PyModule_AddIntConstant(module, "RLIMIT_MSGQUEUE", RLIMIT_MSGQUEUE);
+#endif
+#ifdef RLIMIT_NICE
+    PyModule_AddIntConstant(module, "RLIMIT_NICE", RLIMIT_NICE);
+#endif
+#ifdef RLIMIT_RTPRIO
+    PyModule_AddIntConstant(module, "RLIMIT_RTPRIO", RLIMIT_RTPRIO);
+#endif
+#ifdef RLIMIT_RTTIME
+    PyModule_AddIntConstant(module, "RLIMIT_RTTIME", RLIMIT_RTTIME);
+#endif
+#ifdef RLIMIT_SIGPENDING
+    PyModule_AddIntConstant(module, "RLIMIT_SIGPENDING", RLIMIT_SIGPENDING);
+#endif
+#endif
+    PyModule_AddIntConstant(module, "DUPLEX_HALF", DUPLEX_HALF);
+    PyModule_AddIntConstant(module, "DUPLEX_FULL", DUPLEX_FULL);
+    PyModule_AddIntConstant(module, "DUPLEX_UNKNOWN", DUPLEX_UNKNOWN);
+
+    if (module == NULL)
+        INITERROR;
+#if PY_MAJOR_VERSION >= 3
+    return module;
 #endif
 }

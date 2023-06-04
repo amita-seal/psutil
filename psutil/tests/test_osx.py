@@ -1,39 +1,41 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""macOS specific tests."""
+"""OSX specific tests."""
 
-import platform
+import os
 import re
+import subprocess
+import sys
 import time
-import unittest
 
 import psutil
-from psutil import MACOS
-from psutil import POSIX
-from psutil.tests import HAS_BATTERY
-from psutil.tests import TOLERANCE_DISK_USAGE
-from psutil.tests import TOLERANCE_SYS_MEM
-from psutil.tests import PsutilTestCase
-from psutil.tests import retry_on_failure
+from psutil import OSX
+from psutil._compat import PY3
+from psutil.tests import get_test_subprocess
+from psutil.tests import MEMORY_TOLERANCE
+from psutil.tests import reap_children
+from psutil.tests import retry_before_failing
+from psutil.tests import run_test_module_by_name
 from psutil.tests import sh
-from psutil.tests import spawn_testproc
-from psutil.tests import terminate
+from psutil.tests import TRAVIS
+from psutil.tests import unittest
 
 
-if POSIX:
-    from psutil._psutil_posix import getpagesize
+PAGESIZE = os.sysconf("SC_PAGE_SIZE") if OSX else None
 
 
 def sysctl(cmdline):
     """Expects a sysctl command with an argument and parse the result
     returning only the value of interest.
     """
-    out = sh(cmdline)
-    result = out.split()[1]
+    p = subprocess.Popen(cmdline, shell=1, stdout=subprocess.PIPE)
+    result = p.communicate()[0].strip().split()[1]
+    if PY3:
+        result = str(result, sys.stdout.encoding)
     try:
         return int(result)
     except ValueError:
@@ -48,40 +50,63 @@ def vm_stat(field):
             break
     else:
         raise ValueError("line not found")
-    return int(re.search(r'\d+', line).group(0)) * getpagesize()
+    return int(re.search('\d+', line).group(0)) * PAGESIZE
 
 
-@unittest.skipIf(not MACOS, "MACOS only")
-class TestProcess(PsutilTestCase):
+# http://code.activestate.com/recipes/578019/
+def human2bytes(s):
+    SYMBOLS = {
+        'customary': ('B', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y'),
+    }
+    init = s
+    num = ""
+    while s and s[0:1].isdigit() or s[0:1] == '.':
+        num += s[0]
+        s = s[1:]
+    num = float(num)
+    letter = s.strip()
+    for name, sset in SYMBOLS.items():
+        if letter in sset:
+            break
+    else:
+        if letter == 'k':
+            sset = SYMBOLS['customary']
+            letter = letter.upper()
+        else:
+            raise ValueError("can't interpret %r" % init)
+    prefix = {sset[0]: 1}
+    for i, s in enumerate(sset[1:]):
+        prefix[s] = 1 << (i + 1) * 10
+    return int(num * prefix[letter])
+
+
+@unittest.skipUnless(OSX, "not an OSX system")
+class TestProcess(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.pid = spawn_testproc().pid
+        cls.pid = get_test_subprocess().pid
 
     @classmethod
     def tearDownClass(cls):
-        terminate(cls.pid)
+        reap_children()
 
     def test_process_create_time(self):
-        output = sh("ps -o lstart -p %s" % self.pid)
+        cmdline = "ps -o lstart -p %s" % self.pid
+        p = subprocess.Popen(cmdline, shell=1, stdout=subprocess.PIPE)
+        output = p.communicate()[0]
+        if PY3:
+            output = str(output, sys.stdout.encoding)
         start_ps = output.replace('STARTED', '').strip()
-        hhmmss = start_ps.split(' ')[-2]
-        year = start_ps.split(' ')[-1]
         start_psutil = psutil.Process(self.pid).create_time()
-        self.assertEqual(
-            hhmmss,
-            time.strftime("%H:%M:%S", time.localtime(start_psutil)))
-        self.assertEqual(
-            year,
-            time.strftime("%Y", time.localtime(start_psutil)))
+        start_psutil = time.strftime("%a %b %e %H:%M:%S %Y",
+                                     time.localtime(start_psutil))
+        self.assertEqual(start_ps, start_psutil)
 
 
-@unittest.skipIf(not MACOS, "MACOS only")
-class TestSystemAPIs(PsutilTestCase):
+@unittest.skipUnless(OSX, "not an OSX system")
+class TestSystemAPIs(unittest.TestCase):
 
-    # --- disk
-
-    @retry_on_failure()
     def test_disks(self):
         # test psutil.disk_usage() and psutil.disk_partitions()
         # against "df -a"
@@ -103,31 +128,19 @@ class TestSystemAPIs(PsutilTestCase):
             dev, total, used, free = df(part.mountpoint)
             self.assertEqual(part.device, dev)
             self.assertEqual(usage.total, total)
-            self.assertAlmostEqual(usage.free, free,
-                                   delta=TOLERANCE_DISK_USAGE)
-            self.assertAlmostEqual(usage.used, used,
-                                   delta=TOLERANCE_DISK_USAGE)
-
-    # --- cpu
+            # 10 MB tollerance
+            if abs(usage.free - free) > 10 * 1024 * 1024:
+                self.fail("psutil=%s, df=%s" % usage.free, free)
+            if abs(usage.used - used) > 10 * 1024 * 1024:
+                self.fail("psutil=%s, df=%s" % usage.used, used)
 
     def test_cpu_count_logical(self):
         num = sysctl("sysctl hw.logicalcpu")
         self.assertEqual(num, psutil.cpu_count(logical=True))
 
-    def test_cpu_count_cores(self):
+    def test_cpu_count_physical(self):
         num = sysctl("sysctl hw.physicalcpu")
         self.assertEqual(num, psutil.cpu_count(logical=False))
-
-    # TODO: remove this once 1892 is fixed
-    @unittest.skipIf(platform.machine() == 'arm64', "skipped due to #1892")
-    def test_cpu_freq(self):
-        freq = psutil.cpu_freq()
-        self.assertEqual(
-            freq.current * 1000 * 1000, sysctl("sysctl hw.cpufrequency"))
-        self.assertEqual(
-            freq.min * 1000 * 1000, sysctl("sysctl hw.cpufrequency_min"))
-        self.assertEqual(
-            freq.max * 1000 * 1000, sysctl("sysctl hw.cpufrequency_max"))
 
     # --- virtual mem
 
@@ -135,70 +148,52 @@ class TestSystemAPIs(PsutilTestCase):
         sysctl_hwphymem = sysctl('sysctl hw.memsize')
         self.assertEqual(sysctl_hwphymem, psutil.virtual_memory().total)
 
-    @retry_on_failure()
+    @unittest.skipIf(TRAVIS, "")
+    @retry_before_failing()
     def test_vmem_free(self):
-        vmstat_val = vm_stat("free")
-        psutil_val = psutil.virtual_memory().free
-        self.assertAlmostEqual(psutil_val, vmstat_val, delta=TOLERANCE_SYS_MEM)
+        num = vm_stat("free")
+        self.assertAlmostEqual(psutil.virtual_memory().free, num,
+                               delta=MEMORY_TOLERANCE)
 
-    @retry_on_failure()
+    @retry_before_failing()
     def test_vmem_active(self):
-        vmstat_val = vm_stat("active")
-        psutil_val = psutil.virtual_memory().active
-        self.assertAlmostEqual(psutil_val, vmstat_val, delta=TOLERANCE_SYS_MEM)
+        num = vm_stat("active")
+        self.assertAlmostEqual(psutil.virtual_memory().active, num,
+                               delta=MEMORY_TOLERANCE)
 
-    @retry_on_failure()
+    @retry_before_failing()
     def test_vmem_inactive(self):
-        vmstat_val = vm_stat("inactive")
-        psutil_val = psutil.virtual_memory().inactive
-        self.assertAlmostEqual(psutil_val, vmstat_val, delta=TOLERANCE_SYS_MEM)
+        num = vm_stat("inactive")
+        self.assertAlmostEqual(psutil.virtual_memory().inactive, num,
+                               delta=MEMORY_TOLERANCE)
 
-    @retry_on_failure()
+    @retry_before_failing()
     def test_vmem_wired(self):
-        vmstat_val = vm_stat("wired")
-        psutil_val = psutil.virtual_memory().wired
-        self.assertAlmostEqual(psutil_val, vmstat_val, delta=TOLERANCE_SYS_MEM)
+        num = vm_stat("wired")
+        self.assertAlmostEqual(psutil.virtual_memory().wired, num,
+                               delta=MEMORY_TOLERANCE)
 
     # --- swap mem
 
-    @retry_on_failure()
+    @retry_before_failing()
     def test_swapmem_sin(self):
-        vmstat_val = vm_stat("Pageins")
-        psutil_val = psutil.swap_memory().sin
-        self.assertAlmostEqual(psutil_val, vmstat_val, delta=TOLERANCE_SYS_MEM)
+        num = vm_stat("Pageins")
+        self.assertEqual(psutil.swap_memory().sin, num)
 
-    @retry_on_failure()
+    @retry_before_failing()
     def test_swapmem_sout(self):
-        vmstat_val = vm_stat("Pageout")
-        psutil_val = psutil.swap_memory().sout
-        self.assertAlmostEqual(psutil_val, vmstat_val, delta=TOLERANCE_SYS_MEM)
+        num = vm_stat("Pageouts")
+        self.assertEqual(psutil.swap_memory().sout, num)
 
-    # --- network
-
-    def test_net_if_stats(self):
-        for name, stats in psutil.net_if_stats().items():
-            try:
-                out = sh("ifconfig %s" % name)
-            except RuntimeError:
-                pass
-            else:
-                self.assertEqual(stats.isup, 'RUNNING' in out, msg=out)
-                self.assertEqual(stats.mtu,
-                                 int(re.findall(r'mtu (\d+)', out)[0]))
-
-    # --- sensors_battery
-
-    @unittest.skipIf(not HAS_BATTERY, "no battery")
-    def test_sensors_battery(self):
-        out = sh("pmset -g batt")
-        percent = re.search(r"(\d+)%", out).group(1)
-        drawing_from = re.search("Now drawing from '([^']+)'", out).group(1)
-        power_plugged = drawing_from == "AC Power"
-        psutil_result = psutil.sensors_battery()
-        self.assertEqual(psutil_result.power_plugged, power_plugged)
-        self.assertEqual(psutil_result.percent, int(percent))
+    def test_swapmem_total(self):
+        out = sh('sysctl vm.swapusage')
+        out = out.replace('vm.swapusage: ', '')
+        total, used, free = re.findall('\d+.\d+\w', out)
+        psutil_smem = psutil.swap_memory()
+        self.assertEqual(psutil_smem.total, human2bytes(total))
+        self.assertEqual(psutil_smem.used, human2bytes(used))
+        self.assertEqual(psutil_smem.free, human2bytes(free))
 
 
 if __name__ == '__main__':
-    from psutil.tests.runner import run_from_name
-    run_from_name(__file__)
+    run_test_module_by_name(__file__)

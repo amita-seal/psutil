@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -8,7 +8,7 @@
 Similar to 'ps aux --forest' on Linux, prints the process list
 as a tree structure.
 
-$ python3 scripts/pstree.py
+$ python scripts/pstree.py
 0 ?
 |- 1 init
 | |- 289 cgmanager
@@ -29,7 +29,6 @@ $ python3 scripts/pstree.py
 """
 
 from __future__ import print_function
-
 import collections
 import sys
 

@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-r"""
+"""
 List all Windows services installed.
 
-$ python3 scripts/winservices.py
+$ python scripts/winservices.py
 AeLookupSvc (Application Experience)
 status: stopped, start: manual, username: localSystem, pid: None
 binpath: C:\Windows\system32\svchost.exe -k netsvcs
@@ -27,6 +27,7 @@ binpath: C:\Windows\system32\svchost.exe -k LocalServiceAndNoImpersonation
 Appinfo (Application Information)
 status: stopped, start: manual, username: LocalSystem, pid: None
 binpath: C:\Windows\system32\svchost.exe -k netsvcs
+
 ...
 """
 
@@ -44,7 +45,7 @@ if os.name != 'nt':
 def main():
     for service in psutil.win_service_iter():
         info = service.as_dict()
-        print("%r (%r)" % (info['name'], info['display_name']))
+        print("%s (%s)" % (info['name'], info['display_name']))
         print("status: %s, start: %s, username: %s, pid: %s" % (
             info['status'], info['start_type'], info['username'], info['pid']))
         print("binpath: %s" % info['binpath'])

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -7,7 +7,7 @@
 """
 List all mounted disk partitions a-la "df -h" command.
 
-$ python3 scripts/disk_usage.py
+$ python scripts/disk_usage.py
 Device               Total     Used     Free  Use %      Type  Mount
 /dev/sdb3            18.9G    14.7G     3.3G    77%      ext4  /
 /dev/sda6           345.9G    83.8G   244.5G    24%      ext4  /home
@@ -15,11 +15,26 @@ Device               Total     Used     Free  Use %      Type  Mount
 /dev/sda2           600.0M   312.4M   287.6M    52%   fuseblk  /media/Recovery
 """
 
-import os
 import sys
-
+import os
 import psutil
-from psutil._common import bytes2human
+
+
+def bytes2human(n):
+    # http://code.activestate.com/recipes/578019
+    # >>> bytes2human(10000)
+    # '9.8K'
+    # >>> bytes2human(100001221)
+    # '95.4M'
+    symbols = ('K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
+    prefix = {}
+    for i, s in enumerate(symbols):
+        prefix[s] = 1 << (i + 1) * 10
+    for s in reversed(symbols):
+        if n >= prefix[s]:
+            value = float(n) / prefix[s]
+            return '%.1f%s' % (value, s)
+    return "%sB" % n
 
 
 def main():
@@ -42,7 +57,6 @@ def main():
             int(usage.percent),
             part.fstype,
             part.mountpoint))
-
 
 if __name__ == '__main__':
     sys.exit(main())

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -7,7 +7,7 @@
 """
 A clone of 'netstat -antp' on Linux.
 
-$ python3 scripts/netstat.py
+$ python scripts/netstat.py
 Proto Local address      Remote address   Status        PID    Program name
 tcp   127.0.0.1:48256    127.0.0.1:45884  ESTABLISHED   13646  chrome
 tcp   127.0.0.1:47073    127.0.0.1:45884  ESTABLISHED   13646  chrome
@@ -20,9 +20,7 @@ tcp   172.17.42.1:55797  127.0.0.1:443    CLOSE_WAIT    13651  GoogleTalkPlugi
 """
 
 import socket
-from socket import AF_INET
-from socket import SOCK_DGRAM
-from socket import SOCK_STREAM
+from socket import AF_INET, SOCK_STREAM, SOCK_DGRAM
 
 import psutil
 
@@ -43,23 +41,24 @@ def main():
         "Proto", "Local address", "Remote address", "Status", "PID",
         "Program name"))
     proc_names = {}
-    for p in psutil.process_iter(['pid', 'name']):
-        proc_names[p.info['pid']] = p.info['name']
+    for p in psutil.process_iter():
+        try:
+            proc_names[p.pid] = p.name()
+        except psutil.Error:
+            pass
     for c in psutil.net_connections(kind='inet'):
         laddr = "%s:%s" % (c.laddr)
         raddr = ""
         if c.raddr:
             raddr = "%s:%s" % (c.raddr)
-        name = proc_names.get(c.pid, '?') or ''
         print(templ % (
             proto_map[(c.family, c.type)],
             laddr,
             raddr or AD,
             c.status,
             c.pid or AD,
-            name[:15],
+            proc_names.get(c.pid, '?')[:15],
         ))
-
 
 if __name__ == '__main__':
     main()

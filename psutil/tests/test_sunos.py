@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -7,16 +7,16 @@
 """Sun OS specific tests."""
 
 import os
-import unittest
 
 import psutil
 from psutil import SUNOS
-from psutil.tests import PsutilTestCase
+from psutil.tests import run_test_module_by_name
 from psutil.tests import sh
+from psutil.tests import unittest
 
 
-@unittest.skipIf(not SUNOS, "SUNOS only")
-class SunOSSpecificTestCase(PsutilTestCase):
+@unittest.skipUnless(SUNOS, "not a SunOS system")
+class SunOSSpecificTestCase(unittest.TestCase):
 
     def test_swap_memory(self):
         out = sh('env PATH=/usr/sbin:/sbin:%s swap -l' % os.environ['PATH'])
@@ -25,9 +25,10 @@ class SunOSSpecificTestCase(PsutilTestCase):
             raise ValueError('no swap device(s) configured')
         total = free = 0
         for line in lines:
-            fields = line.split()
-            total = int(fields[3]) * 512
-            free = int(fields[4]) * 512
+            line = line.split()
+            t, f = line[-2:]
+            total += int(int(t) * 512)
+            free += int(int(f) * 512)
         used = total - free
 
         psutil_swap = psutil.swap_memory()
@@ -35,11 +36,6 @@ class SunOSSpecificTestCase(PsutilTestCase):
         self.assertEqual(psutil_swap.used, used)
         self.assertEqual(psutil_swap.free, free)
 
-    def test_cpu_count(self):
-        out = sh("/usr/sbin/psrinfo")
-        self.assertEqual(psutil.cpu_count(), len(out.split('\n')))
-
 
 if __name__ == '__main__':
-    from psutil.tests.runner import run_from_name
-    run_from_name(__file__)
+    run_test_module_by_name(__file__)

@@ -1,14 +1,19 @@
 Instructions for running tests
 ==============================
 
-* There are two ways of running tests. As a "user", if psutil is already
-  installed and you just want to test it works::
+- The recommended way to run tests (also on Windows) is to cd into psutil root
+  directory and run ``make test``.
 
-    python -m psutil.tests
+- Depending on the Python version, dependencies for running tests include
+  ``ipaddress``, ``mock`` and ``unittest2`` modules.
+  On Windows also ``pywin32`` and ``wmi`` modules are recommended
+  (although optional).
+  Run ``make setup-dev-env`` to install all deps (also on Windows).
 
-  As a "developer", if you have a copy of the source code and you wish to hack
-  on psutil::
+- To run tests on all supported Python versions install tox
+  (``pip install tox``) then run ``tox`` from psutil root directory.
 
-    make setup-dev-env  # install missing third-party deps
-    make test           # serial run
-    make test-parallel  # parallel run
+- Every time a commit is pushed tests are automatically run on Travis
+  (Linux, OSX) and appveyor (Windows):
+  - https://travis-ci.org/giampaolo/psutil/
+  - https://ci.appveyor.com/project/giampaolo/psutil

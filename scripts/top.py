@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -9,74 +9,91 @@ A clone of top / htop.
 
 Author: Giampaolo Rodola' <g.rodola@gmail.com>
 
-$ python3 scripts/top.py
- CPU0  [||||                                    ]  10.9%
- CPU1  [|||||                                   ]  13.1%
- CPU2  [|||||                                   ]  12.8%
- CPU3  [||||                                    ]  11.5%
- Mem   [|||||||||||||||||||||||||||||           ]  73.0% 11017M / 15936M
- Swap  [                                        ]   1.3%   276M / 20467M
- Processes: 347 (sleeping=273, running=1, idle=73)
- Load average: 1.10 1.28 1.34  Uptime: 8 days, 21:15:40
+$ python scripts/top.py
+ CPU0  [|                                       ]   4.9%
+ CPU1  [|||                                     ]   7.8%
+ CPU2  [                                        ]   2.0%
+ CPU3  [|||||                                   ]  13.9%
+ Mem   [|||||||||||||||||||                     ]  49.8%  4920M/9888M
+ Swap  [                                        ]   0.0%     0M/0M
+ Processes: 287 (running=1, sleeping=286, zombie=1)
+ Load average: 0.34 0.54 0.46  Uptime: 3 days, 10:16:37
 
-PID    USER       NI   VIRT    RES  CPU%  MEM%     TIME+  NAME
-5368   giampaol    0   7.2G   4.3G  41.8  27.7  56:34.18  VirtualBox
-24976  giampaol    0   2.1G 487.2M  18.7   3.1  22:05.16  Web Content
-22731  giampaol    0   3.2G 596.2M  11.6   3.7  35:04.90  firefox
-1202   root        0 807.4M 288.5M  10.6   1.8  12:22.12  Xorg
-22811  giampaol    0   2.8G 741.8M   9.0   4.7   2:26.61  Web Content
-2590   giampaol    0   2.3G 579.4M   5.5   3.6  28:02.70  compiz
-22990  giampaol    0   3.0G   1.2G   4.2   7.6   4:30.32  Web Content
-18412  giampaol    0  90.1M  14.5M   3.5   0.1   0:00.26  python3
-26971  netdata     0  20.8M   3.9M   2.9   0.0   3:17.14  apps.plugin
-2421   giampaol    0   3.3G  36.9M   2.3   0.2  57:14.21  pulseaudio
+PID    USER       NI  VIRT   RES   CPU% MEM%     TIME+  NAME
+------------------------------------------------------------
+989    giampaol    0   66M   12M    7.4  0.1   0:00.61  python
+2083   root        0  506M  159M    6.5  1.6   0:29.26  Xorg
+4503   giampaol    0  599M   25M    6.5  0.3   3:32.60  gnome-terminal
+3868   giampaol    0  358M    8M    2.8  0.1  23:12.60  pulseaudio
+3936   giampaol    0    1G  111M    2.8  1.1  33:41.67  compiz
+4401   giampaol    0  536M  141M    2.8  1.4  35:42.73  skype
+4047   giampaol    0  743M   76M    1.8  0.8  42:03.33  unity-panel-service
+13155  giampaol    0    1G  280M    1.8  2.8  41:57.34  chrome
+10     root        0    0B    0B    0.9  0.0   4:01.81  rcu_sched
+339    giampaol    0    1G  113M    0.9  1.1   8:15.73  chrome
 ...
 """
 
+import atexit
 import datetime
+import os
 import sys
 import time
-
-
 try:
     import curses
 except ImportError:
     sys.exit('platform not supported')
 
 import psutil
-from psutil._common import bytes2human
 
+
+# --- curses stuff
+def tear_down():
+    win.keypad(0)
+    curses.nocbreak()
+    curses.echo()
+    curses.endwin()
 
 win = curses.initscr()
+atexit.register(tear_down)
+curses.endwin()
 lineno = 0
-colors_map = dict(
-    green=3,
-    red=10,
-    yellow=4,
-)
 
 
-def printl(line, color=None, bold=False, highlight=False):
+def print_line(line, highlight=False):
     """A thin wrapper around curses's addstr()."""
     global lineno
     try:
-        flags = 0
-        if color:
-            flags |= curses.color_pair(colors_map[color])
-        if bold:
-            flags |= curses.A_BOLD
         if highlight:
             line += " " * (win.getmaxyx()[1] - len(line))
-            flags |= curses.A_STANDOUT
-        win.addstr(lineno, 0, line, flags)
+            win.addstr(lineno, 0, line, curses.A_REVERSE)
+        else:
+            win.addstr(lineno, 0, line, 0)
     except curses.error:
         lineno = 0
         win.refresh()
         raise
     else:
         lineno += 1
-
 # --- /curses stuff
+
+
+def bytes2human(n):
+    """
+    >>> bytes2human(10000)
+    '9K'
+    >>> bytes2human(100001221)
+    '95M'
+    """
+    symbols = ('K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
+    prefix = {}
+    for i, s in enumerate(symbols):
+        prefix[s] = 1 << (i + 1) * 10
+    for s in reversed(symbols):
+        if n >= prefix[s]:
+            value = int(float(n) / prefix[s])
+            return '%s%s' % (value, s)
+    return "%sB" % n
 
 
 def poll(interval):
@@ -104,15 +121,6 @@ def poll(interval):
     return (processes, procs_status)
 
 
-def get_color(perc):
-    if perc <= 30:
-        return "green"
-    elif perc <= 80:
-        return "yellow"
-    else:
-        return "red"
-
-
 def print_header(procs_status, num_procs):
     """Print system-related info, above the process list."""
 
@@ -125,30 +133,29 @@ def print_header(procs_status, num_procs):
     percs = psutil.cpu_percent(interval=0, percpu=True)
     for cpu_num, perc in enumerate(percs):
         dashes, empty_dashes = get_dashes(perc)
-        line = " CPU%-2s [%s%s] %5s%%" % (cpu_num, dashes, empty_dashes, perc)
-        printl(line, color=get_color(perc))
-
-    # memory usage
+        print_line(" CPU%-2s [%s%s] %5s%%" % (cpu_num, dashes, empty_dashes,
+                                              perc))
     mem = psutil.virtual_memory()
     dashes, empty_dashes = get_dashes(mem.percent)
-    line = " Mem   [%s%s] %5s%% %6s / %s" % (
+    used = mem.total - mem.available
+    line = " Mem   [%s%s] %5s%% %6s/%s" % (
         dashes, empty_dashes,
         mem.percent,
-        bytes2human(mem.used),
-        bytes2human(mem.total),
+        str(int(used / 1024 / 1024)) + "M",
+        str(int(mem.total / 1024 / 1024)) + "M"
     )
-    printl(line, color=get_color(mem.percent))
+    print_line(line)
 
     # swap usage
     swap = psutil.swap_memory()
     dashes, empty_dashes = get_dashes(swap.percent)
-    line = " Swap  [%s%s] %5s%% %6s / %s" % (
+    line = " Swap  [%s%s] %5s%% %6s/%s" % (
         dashes, empty_dashes,
         swap.percent,
-        bytes2human(swap.used),
-        bytes2human(swap.total),
+        str(int(swap.used / 1024 / 1024)) + "M",
+        str(int(swap.total / 1024 / 1024)) + "M"
     )
-    printl(line, color=get_color(swap.percent))
+    print_line(line)
 
     # processes number and status
     st = []
@@ -156,26 +163,26 @@ def print_header(procs_status, num_procs):
         if y:
             st.append("%s=%s" % (x, y))
     st.sort(key=lambda x: x[:3] in ('run', 'sle'), reverse=1)
-    printl(" Processes: %s (%s)" % (num_procs, ', '.join(st)))
+    print_line(" Processes: %s (%s)" % (num_procs, ', '.join(st)))
     # load average, uptime
     uptime = datetime.datetime.now() - \
         datetime.datetime.fromtimestamp(psutil.boot_time())
-    av1, av2, av3 = psutil.getloadavg()
+    av1, av2, av3 = os.getloadavg()
     line = " Load average: %.2f %.2f %.2f  Uptime: %s" \
         % (av1, av2, av3, str(uptime).split('.')[0])
-    printl(line)
+    print_line(line)
 
 
 def refresh_window(procs, procs_status):
     """Print results on screen by using curses."""
     curses.endwin()
-    templ = "%-6s %-8s %4s %6s %6s %5s %5s %9s  %2s"
+    templ = "%-6s %-8s %4s %5s %5s %6s %4s %9s  %2s"
     win.erase()
     header = templ % ("PID", "USER", "NI", "VIRT", "RES", "CPU%", "MEM%",
                       "TIME+", "NAME")
     print_header(procs_status, len(procs))
-    printl("")
-    printl(header, bold=True, highlight=True)
+    print_line("")
+    print_line(header, highlight=True)
     for p in procs:
         # TIME+ column shows process CPU cumulative time and it
         # is expressed as: "mm:ss.ms"
@@ -207,43 +214,21 @@ def refresh_window(procs, procs_status):
                         p.dict['name'] or '',
                         )
         try:
-            printl(line)
+            print_line(line)
         except curses.error:
             break
         win.refresh()
 
 
-def setup():
-    curses.start_color()
-    curses.use_default_colors()
-    for i in range(0, curses.COLORS):
-        curses.init_pair(i + 1, i, -1)
-    curses.endwin()
-    win.nodelay(1)
-
-
-def tear_down():
-    win.keypad(0)
-    curses.nocbreak()
-    curses.echo()
-    curses.endwin()
-
-
 def main():
-    setup()
     try:
         interval = 0
         while True:
-            if win.getch() == ord('q'):
-                break
             args = poll(interval)
             refresh_window(*args)
             interval = 1
     except (KeyboardInterrupt, SystemExit):
         pass
-    finally:
-        tear_down()
-
 
 if __name__ == '__main__':
     main()

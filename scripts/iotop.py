@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 # Copyright (c) 2009, Giampaolo Rodola'. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -8,13 +8,13 @@
 A clone of iotop (http://guichaz.free.fr/iotop/) showing real time
 disk I/O statistics.
 
-It works on Linux only (FreeBSD and macOS are missing support for IO
+It works on Linux only (FreeBSD and OSX are missing support for IO
 counters).
 It doesn't work on Windows as curses module is required.
 
 Example output:
 
-$ python3 scripts/iotop.py
+$ python scripts/iotop.py
 Total DISK READ: 0.00 B/s | Total DISK WRITE: 472.00 K/s
 PID   USER      DISK READ  DISK WRITE  COMMAND
 13155 giampao    0.00 B/s  428.00 K/s  /usr/bin/google-chrome-beta
@@ -30,24 +30,31 @@ PID   USER      DISK READ  DISK WRITE  COMMAND
 Author: Giampaolo Rodola' <g.rodola@gmail.com>
 """
 
-import sys
+import atexit
 import time
-
-
+import sys
 try:
     import curses
 except ImportError:
     sys.exit('platform not supported')
 
 import psutil
-from psutil._common import bytes2human
 
+
+# --- curses stuff
+def tear_down():
+    win.keypad(0)
+    curses.nocbreak()
+    curses.echo()
+    curses.endwin()
 
 win = curses.initscr()
+atexit.register(tear_down)
+curses.endwin()
 lineno = 0
 
 
-def printl(line, highlight=False):
+def print_line(line, highlight=False):
     """A thin wrapper around curses's addstr()."""
     global lineno
     try:
@@ -62,16 +69,35 @@ def printl(line, highlight=False):
         raise
     else:
         lineno += 1
+# --- /curses stuff
+
+
+def bytes2human(n):
+    """
+    >>> bytes2human(10000)
+    '9.8 K/s'
+    >>> bytes2human(100001221)
+    '95.4 M/s'
+    """
+    symbols = ('K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
+    prefix = {}
+    for i, s in enumerate(symbols):
+        prefix[s] = 1 << (i + 1) * 10
+    for s in reversed(symbols):
+        if n >= prefix[s]:
+            value = float(n) / prefix[s]
+            return '%.2f %s/s' % (value, s)
+    return '%.2f B/s' % (n)
 
 
 def poll(interval):
-    """Calculate IO usage by comparing IO statistics before and
+    """Calculate IO usage by comparing IO statics before and
     after the interval.
     Return a tuple including all currently running processes
     sorted by IO activity and total disks I/O activity.
     """
     # first get a list of all processes and disk io counters
-    procs = list(psutil.process_iter())
+    procs = [p for p in psutil.process_iter()]
     for p in procs[:]:
         try:
             p._before = p.io_counters()
@@ -85,15 +111,14 @@ def poll(interval):
 
     # then retrieve the same info again
     for p in procs[:]:
-        with p.oneshot():
-            try:
-                p._after = p.io_counters()
-                p._cmdline = ' '.join(p.cmdline())
-                if not p._cmdline:
-                    p._cmdline = p.name()
-                p._username = p.username()
-            except (psutil.NoSuchProcess, psutil.ZombieProcess):
-                procs.remove(p)
+        try:
+            p._after = p.io_counters()
+            p._cmdline = ' '.join(p.cmdline())
+            if not p._cmdline:
+                p._cmdline = p.name()
+            p._username = p.username()
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            procs.remove(p)
     disks_after = psutil.disk_io_counters()
 
     # finally calculate results by comparing data before and
@@ -121,10 +146,10 @@ def refresh_window(procs, disks_read, disks_write):
 
     disks_tot = "Total DISK READ: %s | Total DISK WRITE: %s" \
                 % (bytes2human(disks_read), bytes2human(disks_write))
-    printl(disks_tot)
+    print_line(disks_tot)
 
     header = templ % ("PID", "USER", "DISK READ", "DISK WRITE", "COMMAND")
-    printl(header, highlight=True)
+    print_line(header, highlight=True)
 
     for p in procs:
         line = templ % (
@@ -134,46 +159,21 @@ def refresh_window(procs, disks_read, disks_write):
             bytes2human(p._write_per_sec),
             p._cmdline)
         try:
-            printl(line)
+            print_line(line)
         except curses.error:
             break
     win.refresh()
 
 
-def setup():
-    curses.start_color()
-    curses.use_default_colors()
-    for i in range(0, curses.COLORS):
-        curses.init_pair(i + 1, i, -1)
-    curses.endwin()
-    win.nodelay(1)
-
-
-def tear_down():
-    win.keypad(0)
-    curses.nocbreak()
-    curses.echo()
-    curses.endwin()
-
-
 def main():
-    global lineno
-    setup()
     try:
         interval = 0
         while True:
-            if win.getch() == ord('q'):
-                break
             args = poll(interval)
             refresh_window(*args)
-            lineno = 0
-            interval = 0.5
-            time.sleep(interval)
+            interval = 1
     except (KeyboardInterrupt, SystemExit):
         pass
-    finally:
-        tear_down()
-
 
 if __name__ == '__main__':
     main()
